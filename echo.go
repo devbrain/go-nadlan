@@ -1,5 +1,5 @@
 package gonadlan
 
 func Echo() string {
-	return "echo"
+	return "echo 1"
 }
