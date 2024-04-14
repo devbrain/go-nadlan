@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 )
 
 func FetchYad2Page(page int, city int, forSale bool) ([]byte, int, error) {
@@ -27,7 +29,7 @@ func FetchYad2Page(page int, city int, forSale bool) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	SetStandardHeaders(req, "https://yad2.co.il")
+	SetStandardHeaders(req, "gw.yad2.co.il")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, 0, err
@@ -37,24 +39,322 @@ func FetchYad2Page(page int, city int, forSale bool) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	//f, err := os.Create(fmt.Sprintf("%d-%d-%d-%v.json", city, page, res.StatusCode, forSale))
+	//defer f.Close()
+	//f.Write(body)
 
 	return body, res.StatusCode, nil
 }
 
-func GetYad2Data(page int, city int, forSale bool) (*Yad2RawData, error) {
+func GetYad2Data(page int, city int, forSale bool) ([]Yad2Data, int, error) {
 	body, statusCode, err := FetchYad2Page(page, city, forSale)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if statusCode != 200 {
-		return nil, fmt.Errorf("bad status code %d", statusCode)
+		return nil, 0, fmt.Errorf("bad status code %d", statusCode)
 	}
 	var yad2Data Yad2RawData
 	err = json.Unmarshal(body, &yad2Data)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return &yad2Data, nil
+	data, lastPage := ParseYad2RawData(&yad2Data, forSale)
+	return data, lastPage, nil
+}
+
+func anyToInt(x any) int {
+	switch v := x.(type) {
+	case int:
+		return x.(int)
+	case float64:
+		return int(x.(float64))
+	case float32:
+		return int(x.(float32))
+	default:
+		panic(fmt.Sprintf("UnknownAT type %v", v))
+	}
+}
+
+func anyToFloat(x any) float32 {
+	switch v := x.(type) {
+	case int:
+		return float32(x.(int))
+	case float64:
+		return float32(x.(float64))
+	case float32:
+		return x.(float32)
+	case string:
+		strVal := x.(string)
+		if len(strVal) == 0 {
+			return -1000.0
+		}
+		if strVal == "קרקע" {
+			return 0
+		} else if strVal == "לא צוין" {
+			return -1000.0
+		} else {
+			intVal, err := strconv.Atoi(strVal)
+			if err != nil {
+				panic(fmt.Sprintf("UnknownAT type %v", v))
+			}
+			return float32(intVal)
+		}
+	default:
+		panic(fmt.Sprintf("UnknownAT type %v", v))
+	}
+}
+
+func anyToString(x any) string {
+	switch x.(type) {
+	case int:
+	case float64:
+	case float32:
+		return fmt.Sprintf("%v", x)
+	case string:
+		return x.(string)
+	default:
+		return ""
+	}
+	return ""
+}
+
+func parsePriceStr(price string, currency string) (float64, error) {
+	f := strings.Trim(strings.ReplaceAll(
+		strings.ReplaceAll(
+			strings.ReplaceAll(price, currency, ""),
+			",", ""),
+		".", ""), " ")
+	atoi, err := strconv.Atoi(f)
+	if err == nil {
+		return float64(atoi), nil
+	}
+	return 0, nil
+}
+
+func parsePrice(price any, currency string) (float64, error) {
+	switch v := price.(type) {
+	case int:
+		return float64(price.(int)), nil
+	case float64:
+		return price.(float64), nil
+	case float32:
+		return float64(price.(float32)), nil
+	case int64:
+		return float64(price.(int64)), nil
+	case string:
+		return parsePriceStr(price.(string), currency)
+	default:
+		panic(fmt.Sprintf("UnknownAT type %v", v))
+	}
+}
+
+func minDates(d1 *time.Time, d2 *time.Time) *time.Time {
+	if d1 != nil && d2 != nil {
+		if d1.Before(*d2) {
+			return d1
+		}
+		return d2
+	}
+	if d1 != nil {
+		return d1
+	}
+	if d2 != nil {
+		return d2
+	}
+	return nil
+}
+
+func maxDates(d1 *time.Time, d2 *time.Time) *time.Time {
+	if d1 != nil && d2 != nil {
+		if d1.Before(*d2) {
+			return d2
+		}
+		return d1
+	}
+	if d1 != nil {
+		return d1
+	}
+	if d2 != nil {
+		return d2
+	}
+	return nil
+}
+
+func parseDates(date string, dateAdded string, dateUpdated string) (*time.Time, *time.Time) {
+	d, errD := time.Parse(time.DateTime, date)
+	dA, errA := time.Parse(time.DateTime, dateAdded)
+	dU, errU := time.Parse(time.DateTime, dateUpdated)
+
+	var dPtr *time.Time = nil
+	var dAPtr *time.Time = nil
+	var dUPtr *time.Time = nil
+
+	if errD == nil {
+		dPtr = &d
+	}
+	if errA == nil {
+		dAPtr = &dA
+	}
+	if errU == nil {
+		dUPtr = &dU
+	}
+
+	return minDates(dPtr, minDates(dAPtr, dUPtr)), maxDates(dPtr, maxDates(dAPtr, dUPtr))
+}
+
+func parseAssetType(at string) AssetType {
+	if len(at) == 0 {
+		return UnknownAT
+	}
+	if strings.Index(at, "חדש מקבלן") != -1 {
+		return TotalNewAT
+	}
+	if strings.Index(at, "גרו בנכס") != -1 {
+		return NewAT
+	}
+	if strings.Index(at, "דרוש שיפוץ") != -1 {
+		return RenovationNeededAT
+	}
+	if strings.Index(at, "במצב שמור") != -1 {
+		return PreservedAT
+	}
+	if strings.Index(at, "משופץ") != -1 {
+		return RenovatedAT
+	}
+	panic(at)
+}
+
+func parseHomeType(ht string) HomeType {
+	if len(ht) == 0 {
+		return UnknownHT
+	}
+	if strings.Index(ht, "כללי") != -1 {
+		return GenericHT
+	}
+	if strings.Index(ht, "פרטי") != -1 {
+		return PratiHT
+	}
+	if strings.Index(ht, "גג") != -1 {
+		return RoofHT
+	}
+	if strings.Index(ht, "טריפלקס") != -1 {
+		return TriplexHT
+	}
+	if strings.Index(ht, "משפחתי") != -1 {
+		return DualHT
+	}
+	if strings.Index(ht, "סטודיו") != -1 {
+		return StudioHT
+	}
+	if strings.Index(ht, "דירת גן") != -1 {
+		return GardenHT
+	}
+	if strings.Index(ht, "דופלקס") != -1 {
+		return DuplexHT
+	}
+	if strings.Index(ht, "מגרשים") != -1 {
+		return MigrashHT
+	}
+	if strings.Index(ht, "יחידת דיור") != -1 {
+		return YehidaHT
+	}
+	if strings.Index(ht, "חניה") != -1 {
+		return ParkingHT
+	}
+	if strings.Index(ht, "דירה") != -1 {
+		return FlatHT
+	}
+	if strings.Index(ht, "בניין") != -1 {
+		return WholeBuildingHT
+	}
+	if strings.Index(ht, "קב' רכישה") != -1 {
+		return KvuzatRehishaHT
+	}
+	if strings.Index(ht, "מרתף") != -1 {
+		return CellarHT
+	}
+	if strings.Index(ht, "מחסן") != -1 {
+		return StorageHT
+	}
+	if strings.Index(ht, "תיירות") != -1 {
+		return TourismHT
+	}
+	if strings.Index(ht, "דיור מוגן") != -1 {
+		return PensionHT
+	}
+	if strings.Index(ht, "סאבלט") != -1 {
+		return SubletHT
+	}
+	if strings.Index(ht, "החלפת") != -1 {
+		return ExchangeHT
+	}
+	panic(ht)
+}
+
+func ParseYad2RawData(rawData *Yad2RawData, forSale bool) ([]Yad2Data, int) {
+	out := make([]Yad2Data, 0)
+	for _, f := range rawData.Data.Feed.FeedItems {
+		if f.Type != "ad" {
+			continue
+		}
+		var x Yad2Data
+		x.ForSale = forSale
+		var errPrice error
+		x.Price, errPrice = parsePrice(f.Price, f.CurrencyText)
+		if errPrice != nil {
+			continue
+		}
+		x.Properties.Floor = -1000.0
+		x.Properties.Rooms = -1000.0
+		x.Properties.SquareMeter = -1000.0
+
+		for _, obj := range f.Row4 {
+			val := anyToFloat(obj.Value)
+			if obj.Key == "rooms" {
+				x.Properties.Rooms = val
+			} else if obj.Key == "floor" {
+				x.Properties.Floor = val
+			} else if obj.Key == "SquareMeter" {
+				x.Properties.SquareMeter = val
+			}
+		}
+
+		if x.Properties.Floor == -1000.0 || x.Properties.Rooms == -1000.0 || x.Properties.SquareMeter == -1000.0 {
+			continue
+		}
+
+		x.ExtInfo.Text = f.SearchText
+		x.ExtInfo.Images = f.ImagesUrls
+		x.ExtInfo.PrimaryArea = f.PrimaryArea
+		x.ExtInfo.PrimaryAreaID = f.PrimaryAreaID
+		x.ExtInfo.AreaIDText = f.AreaIDText
+		x.ExtInfo.SecondaryArea = f.SecondaryArea
+		x.ExtInfo.AreaID = f.AreaID
+		x.ExtInfo.Title = f.Title
+		x.ExtInfo.Title1 = f.Title1
+		x.ExtInfo.Title2 = f.Title2
+		x.CityCode = anyToInt(f.CityCode)
+
+		x.ExtInfo.Street = anyToString(f.Street)
+		x.Coordinates.Latitude = f.Coordinates.Latitude
+		x.Coordinates.Longitude = f.Coordinates.Longitude
+
+		x.AdNumber = f.AdNumber
+		x.ID = f.ID
+		x.LinkToken = f.LinkToken
+		x.RecordID = f.RecordID
+		x.Merchant = f.Merchant
+
+		x.HoodID = f.HoodID
+		x.Neighborhood = f.Neighborhood
+		x.Asset = parseAssetType(f.AssetClassificationIDText)
+		x.Home = parseHomeType(f.HomeTypeIDText)
+		x.DateAdded, x.DateUpdated = parseDates(f.Date, f.DateAdded, f.UpdatedAt)
+
+		out = append(out, x)
+	}
+	return out, rawData.Data.Pagination.LastPage
 }
 
 type Yad2RawData struct {
@@ -80,30 +380,10 @@ type Yad2RawData struct {
 					Label string `json:"label"`
 					Value any    `json:"value"`
 				} `json:"row_4,omitempty"`
-				Row5       any    `json:"row_5,omitempty"`
-				SearchText string `json:"search_text,omitempty"`
-				Title1     string `json:"title_1,omitempty"`
-				Title2     string `json:"title_2,omitempty"`
-				Images     struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-				} `json:"images,omitempty"`
+				Row5          any      `json:"row_5,omitempty"`
+				SearchText    string   `json:"search_text,omitempty"`
+				Title1        string   `json:"title_1,omitempty"`
+				Title2        string   `json:"title_2,omitempty"`
 				ImagesCount   int      `json:"images_count,omitempty"`
 				ImgURL        string   `json:"img_url,omitempty"`
 				ImagesUrls    []string `json:"images_urls,omitempty"`
@@ -116,7 +396,7 @@ type Yad2RawData struct {
 				AreaID        int      `json:"area_id,omitempty"`
 				City          string   `json:"city,omitempty"`
 				CityCode      any      `json:"city_code,omitempty"`
-				Street        string   `json:"street,omitempty"`
+				Street        any      `json:"street,omitempty"`
 				Coordinates   struct {
 					Latitude  float64 `json:"latitude"`
 					Longitude float64 `json:"longitude"`
@@ -133,7 +413,7 @@ type Yad2RawData struct {
 				ID                          string `json:"id,omitempty"`
 				LinkToken                   string `json:"link_token,omitempty"`
 				Merchant                    bool   `json:"merchant,omitempty"`
-				ContactName                 string `json:"contact_name,omitempty"`
+				ContactName                 any    `json:"contact_name,omitempty"`
 				MerchantName                string `json:"merchant_name,omitempty"`
 				RecordID                    int    `json:"record_id,omitempty"`
 				SubcatID                    string `json:"subcat_id,omitempty"`
@@ -160,7 +440,7 @@ type Yad2RawData struct {
 				RemoveOnUnlike              bool   `json:"remove_on_unlike,omitempty"`
 				Type                        string `json:"type"`
 				UID                         any    `json:"uid,omitempty"`
-				AddressMore                 string `json:"address_more,omitempty"`
+				AddressMore                 any    `json:"address_more,omitempty"`
 				BrokerAvatar                string `json:"broker_avatar,omitempty"`
 				HoodID                      int    `json:"hood_id,omitempty"`
 				OfficeAbout                 string `json:"office_about,omitempty"`
@@ -176,669 +456,7 @@ type Yad2RawData struct {
 				BackgroundType              int    `json:"background_type,omitempty"`
 				IsPlatinum                  bool   `json:"is_platinum,omitempty"`
 				IsMobilePlatinum            bool   `json:"is_mobile_platinum,omitempty"`
-				Images0                     struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images1 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-					Image11 struct {
-						Src string `json:"src"`
-					} `json:"Image11"`
-					Image12 struct {
-						Src string `json:"src"`
-					} `json:"Image12"`
-					Image13 struct {
-						Src string `json:"src"`
-					} `json:"Image13"`
-					Image14 struct {
-						Src string `json:"src"`
-					} `json:"Image14"`
-				} `json:"images,omitempty"`
-				Images2 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-				} `json:"images,omitempty"`
-				Images3 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-				} `json:"images,omitempty"`
-				Images4 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-				} `json:"images,omitempty"`
-				Images5 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images6 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-				} `json:"images,omitempty"`
-				Images7 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images8 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-				} `json:"images,omitempty"`
-				Images9 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-				} `json:"images,omitempty"`
-				Images10 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-				} `json:"images,omitempty"`
-				Images11 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-				} `json:"images,omitempty"`
-				Images12 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-				} `json:"images,omitempty"`
-				Images13 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-				} `json:"images,omitempty"`
-				Images14 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-				} `json:"images,omitempty"`
-				Title    string `json:"title,omitempty"`
-				Images15 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images16 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images17 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-				} `json:"images,omitempty"`
-				Images18 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-				} `json:"images,omitempty"`
-				Images19 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-					Image11 struct {
-						Src string `json:"src"`
-					} `json:"Image11"`
-				} `json:"images,omitempty"`
-				Images20 struct {
-				} `json:"images,omitempty"`
-				Images21 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-				} `json:"images,omitempty"`
-				Images22 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-				} `json:"images,omitempty"`
-				Images23 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-				} `json:"images,omitempty"`
-				Images24 struct {
-				} `json:"images,omitempty"`
-				Images25 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-				} `json:"images,omitempty"`
-				Images26 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-					Image11 struct {
-						Src string `json:"src"`
-					} `json:"Image11"`
-					Image12 struct {
-						Src string `json:"src"`
-					} `json:"Image12"`
-				} `json:"images,omitempty"`
-				Images27 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-				} `json:"images,omitempty"`
-				Images28 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-				} `json:"images,omitempty"`
-				Images29 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-				} `json:"images,omitempty"`
-				Images30 struct {
-					Image1 struct {
-						Src string `json:"src"`
-					} `json:"Image1"`
-					Image2 struct {
-						Src string `json:"src"`
-					} `json:"Image2"`
-					Image3 struct {
-						Src string `json:"src"`
-					} `json:"Image3"`
-					Image4 struct {
-						Src string `json:"src"`
-					} `json:"Image4"`
-					Image5 struct {
-						Src string `json:"src"`
-					} `json:"Image5"`
-					Image6 struct {
-						Src string `json:"src"`
-					} `json:"Image6"`
-					Image7 struct {
-						Src string `json:"src"`
-					} `json:"Image7"`
-					Image8 struct {
-						Src string `json:"src"`
-					} `json:"Image8"`
-					Image9 struct {
-						Src string `json:"src"`
-					} `json:"Image9"`
-					Image10 struct {
-						Src string `json:"src"`
-					} `json:"Image10"`
-					Image11 struct {
-						Src string `json:"src"`
-					} `json:"Image11"`
-					Image12 struct {
-						Src string `json:"src"`
-					} `json:"Image12"`
-					Image13 struct {
-						Src string `json:"src"`
-					} `json:"Image13"`
-					Image14 struct {
-						Src string `json:"src"`
-					} `json:"Image14"`
-					Image15 struct {
-						Src string `json:"src"`
-					} `json:"Image15"`
-				} `json:"images,omitempty"`
+				Title                       string `json:"title,omitempty"`
 			} `json:"feed_items"`
 			CurrentPage  int    `json:"current_page"`
 			PageSize     int    `json:"page_size"`
