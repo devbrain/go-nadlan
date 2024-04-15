@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	mapset "github.com/deckarep/golang-set/v2"
 	gonadlan "github.com/devbrain/go-nadlan"
 	"io"
 	"io/fs"
@@ -13,7 +12,7 @@ import (
 )
 
 func iterateFiles() {
-	mySet := mapset.NewSet[string]()
+
 	_ = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
 		if strings.HasSuffix(path, ".json") {
 			fmt.Println(path)
@@ -33,14 +32,14 @@ func iterateFiles() {
 			}
 			for _, fi := range yad2Data.Data.Feed.FeedItems {
 				for _, obj := range fi.Row4 {
-					mySet.Add(obj.Key)
+					fmt.Println(obj)
 				}
 			}
 			gonadlan.ParseYad2RawData(&yad2Data, true)
 		}
 		return nil
 	})
-	fmt.Println(mySet)
+
 }
 
 func main() {
