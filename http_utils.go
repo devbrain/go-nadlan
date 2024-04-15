@@ -6,7 +6,7 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/zstd"
 	"io"
-	"math/rand/v2"
+	"math/rand"
 	"net/http"
 	"strings"
 )
@@ -15,13 +15,13 @@ func SetStandardHeaders(req *http.Request, originUrl string) {
 	req.Header.Add("Connection", "keep-alive")
 	req.Header.Add("sec-ch-ua", "Chromium\";v=\"104\", \" Not A;Brand\";v=\"99\", \"Google Chrome\";v=\"104")
 	req.Header.Add("Accept", "application/json, text/plain, */*")
-	if rand.IntN(100)%2 == 0 {
+	if rand.Intn(100)%2 == 0 {
 		req.Header.Add("mobile-app", "false")
 	} else {
 		req.Header.Add("mobile-app", "true")
 	}
 	req.Header.Add("sec-ch-ua-mobile", "?0")
-	if rand.IntN(100)%2 == 0 {
+	if rand.Intn(100)%2 == 0 {
 		req.Header.Add("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.79 Safari/537.36")
 	} else {
 		req.Header.Add("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0")
