@@ -79,3 +79,26 @@ type Yad2Data struct {
 		SquareMeter float32 `json:"squareMeter"`
 	} `json:"properties"`
 }
+
+type Yad2AdditionalData struct {
+	AdNumber          int     `json:"ad_number"`
+	TotalFloor        int     `json:"total_floor"`
+	AssetExclusive    bool    `json:"asset_exclusive"`
+	AirConditioner    bool    `json:"air_conditioner"`
+	Bars              bool    `json:"bars"`
+	Boiler            bool    `json:"boiler"`
+	Elevator          bool    `json:"elevator"`
+	Accessibility     bool    `json:"accessibility"`
+	Renovated         bool    `json:"renovated"`
+	Shelter           bool    `json:"shelter"`
+	Warehouse         bool    `json:"warehouse"`
+	Pets              bool    `json:"pets"`
+	RavBariach        bool    `json:"ravBariach"`
+	Tornado           bool    `json:"tornado"`
+	Furniture         bool    `json:"furniture"`
+	FlexibleEnterDate bool    `json:"flexibleEnterDate"`
+	LongTerm          bool    `json:"longTerm"`
+	Balconies         float32 `json:"balconies"`
+	GardenArea        float32 `json:"gardenArea"`
+	Parking           float32 `json:"parking"`
+}

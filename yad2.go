@@ -577,3 +577,127 @@ type Yad2RawData struct {
 	} `json:"data"`
 	Message string `json:"message"`
 }
+
+func FetchAdditionalData(addNumber int) (*Yad2AdditionalData, error) {
+	yad2Url, err := url.Parse("https://gw.yad2.co.il/feed-search-legacy/item")
+	if err != nil {
+		return nil, err
+	}
+	params := yad2Url.Query()
+	params.Add("token", fmt.Sprintf("%v", addNumber))
+
+	yad2Url.RawQuery = params.Encode()
+	targetUrl := yad2Url.String()
+	req, err := http.NewRequest(http.MethodGet, targetUrl, nil)
+	if err != nil {
+		return nil, err
+	}
+	SetStandardHeaders(req, "gw.yad2.co.il")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("request failed %v", res.StatusCode)
+	}
+	body, err := ReadHTTPResponse(res, err)
+	if err != nil {
+		return nil, err
+	}
+
+	var yad2Data itemData
+	err = json.Unmarshal(body, &yad2Data)
+	if err != nil {
+		return nil, err
+	}
+	return parseItemData(&yad2Data)
+}
+
+func parseItemData(data *itemData) (*Yad2AdditionalData, error) {
+	var out Yad2AdditionalData
+	tf, err := anyToFloat(data.TotalFloor)
+	if err != nil {
+		out.TotalFloor = -1000
+	} else {
+		out.TotalFloor = int(tf)
+	}
+	out.Balconies, _ = anyToFloat(data.Balconies)
+	out.Parking, _ = anyToFloat(data.Parking)
+
+	out.GardenArea, _ = anyToFloat(data.GardenArea)
+
+	for _, kv := range data.Items {
+		value := false
+		switch kv.Value.(type) {
+		case bool:
+			value = kv.Value.(bool)
+			break
+		case int:
+			value = kv.Value.(int) != 0
+			break
+		}
+		switch kv.Key {
+		case "asset_exclusive":
+		case "asset_exclusive_declaration":
+			out.AssetExclusive = value
+			break
+		case "air_conditioner":
+			out.AirConditioner = value
+			break
+		case "bars":
+			out.Bars = value
+			break
+		case "boiler":
+			out.Boiler = value
+			break
+		case "elevator":
+			out.Elevator = value
+			break
+		case "accessibility":
+			out.Elevator = value
+			break
+		case "renovated":
+			out.Renovated = value
+			break
+		case "shelter":
+			out.Shelter = value
+			break
+		case "warhouse":
+			out.Warehouse = value
+			break
+		case "pets":
+			out.Pets = value
+			break
+		case "rav_bariach":
+			out.RavBariach = value
+			break
+		case "tornado":
+			out.Tornado = value
+			break
+		case "furniture":
+			out.Furniture = value
+			break
+		case "flexible_enter_date":
+			out.FlexibleEnterDate = value
+			break
+		case "long_term":
+			out.LongTerm = value
+			break
+		}
+	}
+	return &out, nil
+}
+
+type additionalInfoItem struct {
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+}
+
+type itemData struct {
+	AdNumber   int                  `json:"ad_number"`
+	TotalFloor any                  `json:"TotalFloor_text"`
+	Balconies  any                  `json:"balconies"`
+	GardenArea any                  `json:"garden_area"`
+	Parking    any                  `json:"parking"`
+	Items      []additionalInfoItem `json:"additional_info_items_v2"`
+}

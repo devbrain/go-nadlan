@@ -13,7 +13,7 @@ import (
 
 func iterateFiles() {
 
-	_ = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
+	_ = filepath.Walk("/home/igor/proj/nadlan/json", func(path string, info fs.FileInfo, err error) error {
 		if strings.HasSuffix(path, ".json") {
 			fmt.Println(path)
 			f, ferr := os.Open(path)
@@ -31,11 +31,12 @@ func iterateFiles() {
 				return jerr
 			}
 			for _, fi := range yad2Data.Data.Feed.FeedItems {
-				for _, obj := range fi.Row4 {
-					fmt.Println(obj)
+				_, ferr := gonadlan.FetchAdditionalData(fi.AdNumber)
+				if ferr != nil {
+					fmt.Println(ferr)
 				}
 			}
-			gonadlan.ParseYad2RawData(&yad2Data, true)
+
 		}
 		return nil
 	})
