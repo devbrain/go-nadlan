@@ -20,7 +20,7 @@ func FetchYad2Page(page int, city int, forSale bool) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	params := yad2Url.Query()
-	params.Add("city", strconv.Itoa(city))
+	params.Add("city", fmt.Sprintf("%04d", city))
 	params.Add("page", strconv.Itoa(page))
 	params.Add("forceLoad", "true")
 	yad2Url.RawQuery = params.Encode()
